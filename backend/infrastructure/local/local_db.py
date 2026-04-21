@@ -15,9 +15,9 @@ from typing import Any, Dict, List, Optional
 from contextlib import contextmanager
 from pathlib import Path
 
-from config.settings import settings
-from core.schema import SCHEMA_SQL, FUTURE_SCHEMA_SQL
-from core.enums import CampaignStatus, LeadStatus
+from backend.config.settings import settings
+from backend.core.schema import SCHEMA_SQL, FUTURE_SCHEMA_SQL
+from backend.core.enums import CampaignStatus, LeadStatus
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +93,38 @@ class LocalDatabase:
             row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             return dict(row) if row else None
 
+    
+    def create_user_with_id(self, user_id: str, email: str, full_name: Optional[str] = None) -> Dict:
+        """Create a user with a pre-supplied ID (e.g. Clerk user_id)."""
+        user = {
+            "id": user_id,
+            "email": email,
+            "full_name": full_name,
+            "stripe_customer_id": None,
+            "plan": "paid",
+            "created_at": _now(),
+            "updated_at": _now(),
+        }
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT OR IGNORE INTO users (id, email, full_name, stripe_customer_id, plan, created_at, updated_at)
+                   VALUES (:id, :email, :full_name, :stripe_customer_id, :plan, :created_at, :updated_at)""",
+                user
+            )
+        logger.info(f"[LocalDB] Created user with Clerk ID {user_id}")
+        return self.get_user(user_id)
+ 
+    def get_user_by_email(self, email: str) -> Optional[Dict]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+            return dict(row) if row else None
+ 
+    def update_user(self, user_id: str, updates: Dict):
+        updates["updated_at"] = _now()
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [user_id]
+        with self._conn() as conn:
+            conn.execute(f"UPDATE users SET {set_clause} WHERE id = ?", values)
     # ── Campaigns 
 
     def create_campaign(

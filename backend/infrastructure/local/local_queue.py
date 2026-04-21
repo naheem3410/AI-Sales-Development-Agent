@@ -22,9 +22,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List
 
-from config.settings import settings
-from core.enums import QueueName, MessageStatus
-from core.messages import PipelineMessage
+from backend.config.settings import settings
+from backend.core.enums import QueueName, MessageStatus
+from backend.core.messages import PipelineMessage
 
 logger = logging.getLogger(__name__)
 

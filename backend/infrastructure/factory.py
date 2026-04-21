@@ -13,7 +13,7 @@ It always goes through get_db() and get_queue().
 import logging
 from typing import Protocol, Any, List, Optional, runtime_checkable
 
-from config.settings import settings, Environment
+from backend.config.settings import settings, Environment
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ def get_db() -> DatabaseClient:
     Production → Aurora PostgreSQL (stub — implement when deploying)
     """
     if settings.is_local():
-        from infrastructure.local.local_db import get_local_db
+        from backend.infrastructure.local.local_db import get_local_db
         return get_local_db()
 
     elif settings.is_production():
@@ -95,7 +95,7 @@ def get_queue() -> QueueClient:
     Production → AWS SQS (stub — implement when deploying)
     """
     if settings.is_local():
-        from infrastructure.local.local_queue import get_local_queue
+        from backend.infrastructure.local.local_queue import get_local_queue
         return get_local_queue()
 
     elif settings.is_production():
@@ -121,7 +121,7 @@ def get_storage():
     Used for large payloads (raw enrichment evidence, email sequences).
     """
     if settings.is_local():
-        from infrastructure.local.local_storage import get_local_storage
+        from backend.infrastructure.local.local_storage import get_local_storage
         return get_local_storage()
 
     elif settings.is_production():
