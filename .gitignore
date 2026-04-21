@@ -96,3 +96,5 @@ sda_s3_mock/
 *.playwright-mcp/
 config/
 *Zone.Identifier
+SDA_PLATFORM_REFERENCE.md
+frontend/

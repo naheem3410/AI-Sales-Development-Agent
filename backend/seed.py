@@ -630,7 +630,7 @@ def seed_fixture(fixture_name: str, db, queue, storage) -> dict:
     Seeds one complete fixture into the database.
     Returns a summary dict of what was created.
     """
-    from core.enums import CampaignStatus, LeadStatus
+    from backend.core.enums import CampaignStatus, LeadStatus
 
     print(f"\n{'═' * 60}")
     print(f"  Seeding fixture: {fixture_name.upper()}")
@@ -793,7 +793,7 @@ def seed_fixture(fixture_name: str, db, queue, storage) -> dict:
 
 def print_summary(db):
     """Print what is currently in the database."""
-    from config.settings import settings
+    from backend.config.settings import settings
 
     print(f"\n{'═' * 60}")
     print(f"  DATABASE SUMMARY")
@@ -897,8 +897,8 @@ def main():
 
     _reset_singletons()
 
-    from infrastructure.factory import get_db, get_queue, get_storage
-    from config.settings import settings
+    from backend.infrastructure.factory import get_db, get_queue, get_storage
+    from backend.config.settings import settings
 
     if args.summary:
         print_summary(get_db())
