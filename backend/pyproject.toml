@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=78.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sda-platform"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "dotenv>=0.9.9",
+    "openai-agents[litellm]>=0.0.15",
+    "pydantic>=2.11.10",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*", "config*", "infrastructure*"]

@@ -1,0 +1,98 @@
+# =========================
+# General
+# =========================
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.swp
+*.swo
+
+# =========================
+# Python (Backend)
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Testing / coverage
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# IDEs
+.vscode/
+.idea/
+
+# =========================
+# Environment variables
+# =========================
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# =========================
+# Next.js / Node (Frontend)
+# =========================
+node_modules/
+.next/
+out/
+build/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Lock files (optional — keep ONE if you use it)
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# =========================
+# Next.js specific
+# =========================
+.next/cache/
+.vercel/
+
+# =========================
+# Misc
+# =========================
+coverage/
+.cache/
+sda_queues/
+sda_s3_mock/
+*.db
+*.Identifier.json
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.vscode/
+.idea/
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.playwright-mcp/
+config/
+*Zone.Identifier
