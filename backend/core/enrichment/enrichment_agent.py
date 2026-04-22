@@ -9,8 +9,8 @@ from agents import Agent, Runner, function_tool, MaxTurnsExceeded
 from agents.extensions.models.litellm_model import LitellmModel
 from pydantic import BaseModel, Field, ValidationError
 
-from core.ingestion.lead_ingestion import LeadResult
-from core.query.generate_queries import QueryGeneratorOutput, LeadQueries
+from backend.core.ingestion.lead_ingestion import LeadResult
+from backend.core.query.generate_queries import QueryGeneratorOutput, LeadQueries
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

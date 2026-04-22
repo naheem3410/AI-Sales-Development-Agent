@@ -7,10 +7,10 @@ from pydantic import BaseModel, Field
 from agents import Agent, Runner, trace, MaxTurnsExceeded
 from agents.extensions.models.litellm_model import LitellmModel
 
-from core.ingestion.lead_ingestion import LeadResult
-from core.enrichment.enrichment_agent import LeadEnrichmentResult
-from core.onboarding.onboarding_agent import OnboardingAgentOutput
-from core.qualification.qualification_agent import LeadDecision
+from backend.core.ingestion.lead_ingestion import LeadResult
+from backend.core.enrichment.enrichment_agent import LeadEnrichmentResult
+from backend.core.onboarding.onboarding_agent import OnboardingAgentOutput
+from backend.core.qualification.qualification_agent import LeadDecision
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

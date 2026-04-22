@@ -26,17 +26,17 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from config.settings import settings
-from core.enums import (
+from backend.config.settings import settings
+from backend.core.enums import (
     AgentName, QueueName, CampaignStatus, LeadStatus,
     MessageStatus, QualificationDecision
 )
-from core.messages import (
+from backend.core.messages import (
     PipelineMessage, OrchestrationMetadata,
     OnboardingPayload, OrchestrationPayload, IngestionPayload,
     QueryGeneratorPayload, EnrichmentPayload, QualificationPayload, EmailPayload
 )
-from infrastructure.factory import get_db, get_queue, get_storage
+from backend.infrastructure.factory import get_db, get_queue, get_storage
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,7 @@ class PipelineRunner:
 
         try:
             # Import here to keep agent code decoupled from infrastructure
-            from core.onboarding.onboarding_agent import run_onboarding_agent, OnboardingAgentInput
+            from backend.core.onboarding.onboarding_agent import run_onboarding_agent, OnboardingAgentInput
 
             result = await run_onboarding_agent(
                 OnboardingAgentInput(
@@ -271,8 +271,8 @@ class PipelineRunner:
         )
 
         try:
-            from core.ingestion.lead_ingestion import get_provider
-            from core.onboarding.onboarding_agent import ICPOutput
+            from backend.core.ingestion.lead_ingestion import get_provider
+            from backend.core.onboarding.onboarding_agent import ICPOutput
 
             # Reconstruct ICP from payload
             onboarding_data = orch_payload.get("onboarding", {})
@@ -288,7 +288,7 @@ class PipelineRunner:
                 fetch_all=False,
                 enrich_mobile=False,
                 test_mode=True,
-                use_mock=False,
+                use_mock=True,
             )
 
             if not leads:
@@ -355,8 +355,8 @@ class PipelineRunner:
         Generate search queries for each lead.
         Returns (updated_message, leads, query_output) for the enrichment step.
         """
-        from core.ingestion.lead_ingestion import LeadResult
-        from core.query.generate_queries import generate_queries
+        from backend.core.ingestion.lead_ingestion import LeadResult
+        from backend.core.query.generate_queries import generate_queries
 
         campaign_id = ingestion_message.campaign_id
         user_id = ingestion_message.user_id
@@ -401,7 +401,7 @@ class PipelineRunner:
         )
 
         try:
-            from core.enrichment.enrichment_agent import run_lead_enrichment_agent
+            from backend.core.enrichment.enrichment_agent import run_lead_enrichment_agent
 
             # Generate queries first
             leads, query_output = self.run_query_generation(ingestion_message)
@@ -491,10 +491,10 @@ class PipelineRunner:
         )
 
         try:
-            from core.qualification.qualification_agent import run_qualification_agent
-            from core.ingestion.lead_ingestion import LeadResult
-            from core.enrichment.enrichment_agent import LeadEnrichmentAgentOutput, LeadEnrichmentResult
-            from core.onboarding.onboarding_agent import OnboardingAgentOutput, ICPOutput, ProductBriefOutput
+            from backend.core.qualification.qualification_agent import run_qualification_agent
+            from backend.core.ingestion.lead_ingestion import LeadResult
+            from backend.core.enrichment.enrichment_agent import LeadEnrichmentAgentOutput, LeadEnrichmentResult
+            from backend.core.onboarding.onboarding_agent import OnboardingAgentOutput, ICPOutput, ProductBriefOutput
 
             enriched_data = enrichment_message.payload.get("enriched_leads", [])
             enriched_leads = [LeadEnrichmentResult.model_validate(e) for e in enriched_data]
@@ -512,7 +512,7 @@ class PipelineRunner:
                 missing_fields=icp_data.get("missing_fields", []),
             )
 
-            from core.enrichment.enrichment_agent import LeadEnrichmentAgentOutput
+            from backend.core.enrichment.enrichment_agent import LeadEnrichmentAgentOutput
             enrichment_output = LeadEnrichmentAgentOutput(enriched_leads=enriched_leads)
 
             result = await run_qualification_agent(
@@ -610,15 +610,15 @@ class PipelineRunner:
         )
 
         try:
-            from core.email.email_agent import run_email_copywriting_agent
-            from core.ingestion.lead_ingestion import LeadResult
-            from core.enrichment.enrichment_agent import (
+            from backend.core.email.email_agent import run_email_copywriting_agent
+            from backend.core.ingestion.lead_ingestion import LeadResult
+            from backend.core.enrichment.enrichment_agent import (
                 LeadEnrichmentResult,
                 EnrichedProfile, SocialProfile, KeyValue,
                 SearchResultItem, DiscrepancyFlag,
             )
-            from core.qualification.qualification_agent import LeadDecision
-            from core.onboarding.onboarding_agent import (
+            from backend.core.qualification.qualification_agent import LeadDecision
+            from backend.core.onboarding.onboarding_agent import (
                 OnboardingAgentOutput, ICPOutput, ProductBriefOutput
             )
 
@@ -897,10 +897,10 @@ class PipelineRunner:
 async def main():
     runner = PipelineRunner()
     await runner.run_full_pipeline(
-        user_id="6711ca28-b6fe-4fee-812e-dde7cdf71920",
-        campaign_name="TestCampaign",
-        website_url="https://edition.cnn.com/",
-        company_name="CNN",
+        user_id="97a8e1d6-f52c-45fd-8405-6f242485654c",
+        campaign_name="Andela Campaign",
+        website_url="https://www.andela.com/",
+        company_name="Andela",
     )
 
 if __name__ == "__main__":

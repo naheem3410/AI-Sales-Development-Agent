@@ -1,7 +1,7 @@
 # mock_data.py
 
-from core.ingestion.lead_ingestion import LeadResult
-from core.enrichment.enrichment_agent import (
+from backend.core.ingestion.lead_ingestion import LeadResult
+from backend.core.enrichment.enrichment_agent import (
     LeadEnrichmentAgentOutput,
     LeadEnrichmentResult,
     EnrichedProfile,
@@ -10,8 +10,8 @@ from core.enrichment.enrichment_agent import (
     SearchResultItem,
     DiscrepancyFlag,
 )
-from core.onboarding.onboarding_agent import OnboardingAgentOutput, ICPOutput, ProductBriefOutput
-from core.qualification.qualification_agent import (
+from backend.core.onboarding.onboarding_agent import OnboardingAgentOutput, ICPOutput, ProductBriefOutput
+from backend.core.qualification.qualification_agent import (
     QualificationBatchOutput,
     LeadDecision,
     DimensionScore,

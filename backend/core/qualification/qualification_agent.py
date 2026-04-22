@@ -5,9 +5,9 @@ from pydantic import BaseModel, Field
 from agents import Agent, Runner, trace, MaxTurnsExceeded
 from agents.extensions.models.litellm_model import LitellmModel
 
-from core.ingestion.lead_ingestion import LeadResult
-from core.enrichment.enrichment_agent import LeadEnrichmentResult, LeadEnrichmentAgentOutput
-from core.onboarding.onboarding_agent import OnboardingAgentOutput
+from backend.core.ingestion.lead_ingestion import LeadResult
+from backend.core.enrichment.enrichment_agent import LeadEnrichmentResult, LeadEnrichmentAgentOutput
+from backend.core.onboarding.onboarding_agent import OnboardingAgentOutput
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -292,7 +292,7 @@ async def run_qualification_agent(
     )
 
     # LLM soft scoring for passed leads + formatting for all
-    model = LitellmModel(model="openai/gpt-4.1-nano")
+    model = LitellmModel(model="openai/gpt-4.1")
 
     with trace("qualification_agent"):
         agent = Agent(

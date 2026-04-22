@@ -4,7 +4,7 @@ import time
 from abc import ABC, abstractmethod
 from typing import List, Optional, Literal
 from pydantic import BaseModel, Field
-from core.onboarding.onboarding_agent import ICPOutput
+from backend.core.onboarding.onboarding_agent import ICPOutput
 import os
 from dotenv import load_dotenv
 
@@ -192,7 +192,7 @@ class LeadProvider(ABC):
         """Full pipeline: search → enrich → return leads."""
 
         if use_mock:
-            from core.mock_data import MOCK_ENRICHED_LEADS
+            from backend.core.mock_data import MOCK_ENRICHED_LEADS
             print(f"\n Mock mode — returning {len(MOCK_ENRICHED_LEADS)} mock leads.")
             return MOCK_ENRICHED_LEADS
 
