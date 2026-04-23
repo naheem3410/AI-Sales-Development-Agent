@@ -97,4 +97,4 @@ sda_s3_mock/
 config/
 *Zone.Identifier
 SDA_PLATFORM_REFERENCE.md
-frontend/
+frontend
