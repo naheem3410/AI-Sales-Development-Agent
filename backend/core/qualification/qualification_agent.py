@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Optional, List, Literal
+from typing import Dict, List, Literal, Optional, Tuple
 from pydantic import BaseModel, Field
 from agents import Agent, Runner, trace, MaxTurnsExceeded
 from agents.extensions.models.litellm_model import LitellmModel
@@ -8,6 +8,9 @@ from agents.extensions.models.litellm_model import LitellmModel
 from backend.core.ingestion.lead_ingestion import LeadResult
 from backend.core.enrichment.enrichment_agent import LeadEnrichmentResult, LeadEnrichmentAgentOutput
 from backend.core.onboarding.onboarding_agent import OnboardingAgentOutput
+from backend.core.observability import agent_observe
+from backend.core.qualification.instruction import QUALIFICATION_INSTRUCTIONS
+from backend.core.utils.llm_batch import MAX_PARALLEL, async_run_with_retries, chunk_indices
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -177,8 +180,9 @@ def _build_qualification_prompt(
 
     parts.append("\n== LEADS TO QUALIFY ==")
 
-    for i, (lead, enrichment, gate) in enumerate(zip(leads, enrichments, gate_results), 1):
-        parts.append(f"\n--- Lead {i}: {lead.name or enrichment.lead_name} ---")
+    for lead, enrichment, gate in zip(leads, enrichments, gate_results):
+        gi = enrichment.lead_index
+        parts.append(f"\n--- Lead {gi} (global lead_index): {lead.name or enrichment.lead_name} ---")
         parts.append(f"Hard gate: {'PASSED' if gate.passed else 'FAILED'}")
 
         if gate.blocking_issues:
@@ -234,64 +238,19 @@ def _build_qualification_prompt(
         "   copy blocking_issues as-is, skip dimension scoring and recommended_angle.",
         "6. Infer seniority from enriched title if LeadResult.seniority is null.",
         "7. Use enriched current_title over raw title for job_title and pain_relevance scoring.",
-        "\nReturn one LeadDecision per lead, in input order, grouped into approved/review/rejected lists.",
+        "\nReturn one LeadDecision per lead above (use each lead's global lead_index field), "
+        "in lead_index order, grouped into approved/review/rejected lists.",
     ]
 
     return "\n".join(parts)
 
 
-# Instructions
-
-QUALIFICATION_INSTRUCTIONS = """
-You are a Lead Qualification Specialist. Your job is to score leads against an ICP and 
-product brief, and decide whether each lead should be approved for email outreach, 
-sent for human review, or rejected.
-
-CRITICAL RULES:
-- Leads that FAILED hard gates are always decision=rejected with icp_match_score=0.0.
-  Do not re-evaluate them — copy their blocking_issues and move on.
-- For passed leads, score all 7 dimensions honestly. Do not inflate scores.
-- pain_relevance is the most important dimension (weight 0.30). Ask: would this person
-  feel the pain described in the product brief given their specific role and company context?
-- Use the enriched current_title over the raw title wherever available.
-- Infer seniority from the enriched title if LeadResult.seniority is null.
-- recommended_angle is ONLY for approved leads. It must reference a specific pain point
-  or differentiator from the product brief, tailored to this person's context.
-- Never hallucinate company signals or achievements not present in enriched data.
-- Return all leads in input order, grouped into approved/review/rejected lists.
-"""
-
-
-# Agent runner
-
-async def run_qualification_agent(
+async def _run_qualification_llm_batch(
     leads: List[LeadResult],
-    enrichment_output: LeadEnrichmentAgentOutput,
+    enrichments: List[LeadEnrichmentResult],
+    gate_results: List[HardGateResult],
     onboarding: OnboardingAgentOutput,
 ) -> QualificationBatchOutput:
-
-    if len(leads) != len(enrichment_output.enriched_leads):
-        raise ValueError(
-            f"Mismatch: {len(leads)} leads but {len(enrichment_output.enriched_leads)} enrichment results."
-        )
-
-    enrichments = enrichment_output.enriched_leads
-    icp = onboarding.icp
-
-    #Python hard gates — no LLM needed
-    gate_results = [
-        _run_hard_gates(lead, enrichment, icp)
-        for lead, enrichment in zip(leads, enrichments)
-    ]
-
-    passed = sum(1 for g in gate_results if g.passed)
-    failed = len(gate_results) - passed
-    logger.info(
-        f"[QualificationAgent] Hard gates: {passed} passed, {failed} failed "
-        f"out of {len(leads)} leads."
-    )
-
-    # LLM soft scoring for passed leads + formatting for all
     model = LitellmModel(model="openai/gpt-4.1")
 
     with trace("qualification_agent"):
@@ -304,7 +263,7 @@ async def run_qualification_agent(
 
         prompt = _build_qualification_prompt(leads, enrichments, onboarding, gate_results)
 
-        logger.info(f"[QualificationAgent] Starting LLM scoring for {len(leads)} leads.")
+        logger.info(f"[QualificationAgent] Starting LLM scoring for {len(leads)} leads in batch.")
         try:
             result = await Runner.run(agent, prompt, max_turns=5)
         except MaxTurnsExceeded:
@@ -316,27 +275,127 @@ async def run_qualification_agent(
     else:
         output = QualificationBatchOutput.model_validate(result.final_output)
 
-    # Post-validation
-    total_out = len(output.approved) + len(output.review) + len(output.rejected)
-    if total_out != len(leads):
-        raise ValueError(
-            f"Output count mismatch: got {total_out} decisions for {len(leads)} leads."
+    batch_decisions = len(output.approved) + len(output.review) + len(output.rejected)
+    if batch_decisions != len(leads):
+        logger.warning(
+            f"[QualificationAgent] Batch output has {batch_decisions} decisions for {len(leads)} leads."
         )
 
-    # Ensure hard-failed leads are never in approved
-    failed_names = {
-        leads[i].name
-        for i, g in enumerate(gate_results)
-        if not g.passed
+    return output
+
+
+@agent_observe("qualification_agent", as_type="agent")
+async def run_qualification_agent(
+    leads: List[LeadResult],
+    enrichment_output: LeadEnrichmentAgentOutput,
+    onboarding: OnboardingAgentOutput,
+) -> QualificationBatchOutput:
+
+    n_leads = len(leads)
+    if len(enrichment_output.enriched_leads) > n_leads:
+        raise ValueError(
+            f"More enrichments than leads: {len(enrichment_output.enriched_leads)} enrichments "
+            f"for {n_leads} leads."
+        )
+
+    by_index: Dict[int, LeadEnrichmentResult] = {}
+    for e in enrichment_output.enriched_leads:
+        if 1 <= e.lead_index <= n_leads:
+            by_index[e.lead_index] = e
+        else:
+            logger.warning(
+                f"[QualificationAgent] Skipping enrichment with out-of-range lead_index={e.lead_index}"
+            )
+
+    ordered_keys = sorted(by_index.keys())
+    matched_leads = [leads[i - 1] for i in ordered_keys]
+    matched_enrichments = [by_index[i] for i in ordered_keys]
+
+    if not matched_leads:
+        logger.warning("[QualificationAgent] No valid lead/enrichment pairs; returning empty output.")
+        return QualificationBatchOutput(
+            approved=[],
+            review=[],
+            rejected=[],
+            batch_summary="No leads with valid enrichment to qualify.",
+        )
+
+    icp = onboarding.icp
+
+    gate_results = [
+        _run_hard_gates(lead, enrichment, icp)
+        for lead, enrichment in zip(matched_leads, matched_enrichments)
+    ]
+
+    passed = sum(1 for g in gate_results if g.passed)
+    failed = len(gate_results) - passed
+    logger.info(
+        f"[QualificationAgent] Hard gates: {passed} passed, {failed} failed "
+        f"out of {len(matched_leads)} matched leads."
+    )
+
+    m = len(matched_leads)
+    slices = chunk_indices(m)
+    sem = asyncio.Semaphore(MAX_PARALLEL)
+
+    async def run_slice(
+        start: int, end: int
+    ) -> Tuple[int, int, Optional[QualificationBatchOutput]]:
+        lb = matched_leads[start:end]
+        eb = matched_enrichments[start:end]
+        gb = gate_results[start:end]
+        async with sem:
+            try:
+                out = await async_run_with_retries(
+                    lambda: _run_qualification_llm_batch(lb, eb, gb, onboarding)
+                )
+                return (start, end, out)
+            except Exception as e:
+                logger.error(
+                    f"[QualificationAgent] Batch [{start}:{end}] failed after retries: {e}"
+                )
+                return (start, end, None)
+
+    tasks = [asyncio.create_task(run_slice(s, e)) for s, e in slices]
+    resolved = await asyncio.gather(*tasks)
+    resolved.sort(key=lambda x: x[0])
+
+    output = QualificationBatchOutput(approved=[], review=[], rejected=[], batch_summary="")
+    summaries: List[str] = []
+    expected_decisions = 0
+
+    for start, end, part in resolved:
+        if part is None:
+            continue
+        expected_decisions += end - start
+        output.approved.extend(part.approved)
+        output.review.extend(part.review)
+        output.rejected.extend(part.rejected)
+        if part.batch_summary:
+            summaries.append(part.batch_summary)
+
+    output.batch_summary = "\n---\n".join(summaries) if summaries else ""
+
+    total_out = len(output.approved) + len(output.review) + len(output.rejected)
+    if total_out != expected_decisions:
+        logger.warning(
+            f"[QualificationAgent] Decision count {total_out} != expected {expected_decisions} "
+            f"from successful batches."
+        )
+
+    failed_indices = {
+        enrich.lead_index
+        for enrich, gate in zip(matched_enrichments, gate_results)
+        if not gate.passed
     }
-    leaked = [d for d in output.approved if d.lead_name in failed_names]
+    leaked = [d for d in output.approved if d.lead_index in failed_indices]
     if leaked:
         logger.error(
             f"[QualificationAgent] Hard-gate failures leaked into approved: "
             f"{[d.lead_name for d in leaked]}. Moving to rejected."
         )
         output.rejected.extend(leaked)
-        output.approved = [d for d in output.approved if d.lead_name not in failed_names]
+        output.approved = [d for d in output.approved if d.lead_index not in failed_indices]
 
     # Ensure approved leads have recommended_angle
     for decision in output.approved:
@@ -356,94 +415,3 @@ async def run_qualification_agent(
     )
 
     return output
-
-
-# Test main
-
-if __name__ == "__main__":
-    from core.mock_data import MOCK_ENRICHED_LEADS, MOCK_ENRICHMENT_OUTPUT, MOCK_ONBOARDING_ANDELA
-
-    # Mock OnboardingAgentOutput
-    from core.onboarding.onboarding_agent import ICPOutput, ProductBriefOutput
-
-    mock_onboarding = OnboardingAgentOutput(
-        icp=ICPOutput(
-            target_type="business",
-            industry=["Financial Services", "Software Development", "IT Services and IT Consulting"],
-            company_size_min=50,
-            company_size_max=10000,
-            funding_status=None,
-            job_titles=["Product Manager", "VP of Product", "Head of Product", "CTO", "Director of Product"],
-            locations=["United States", "United Kingdom", "India", "Europe"],
-            tech_stack=None,
-            demographics=None,
-            seniority=["manager", "director", "vp", "c_suite", "head"],
-        ),
-        product_brief=ProductBriefOutput(
-            product_name="FlowMetrics",
-            what_it_does="AI-powered product analytics platform that surfaces actionable insights from user behavior data.",
-            who_it_is_for="Product managers and product leaders at mid-market SaaS and fintech companies.",
-            pain_it_solves="Product teams waste hours manually querying data warehouses and building dashboards — they lack real-time, role-specific insights to make fast decisions.",
-            key_differentiators=[
-                "No-code setup — connects to existing data stack in under 30 minutes",
-                "Role-based insight feeds tailored to PMs, engineers, and executives",
-                "Automated anomaly detection with root-cause suggestions",
-            ],
-            ideal_customer_description=(
-                "A product manager or product leader at a 100–5000 person fintech or SaaS company "
-                "who owns a product with active users, reports to a VP or C-suite, and is frustrated "
-                "by slow data pipelines and generic dashboards that don't answer their specific questions."
-            ),
-        ),
-        confidence_score=0.9,
-        missing_fields=[],
-    )
-
-    async def main():
-        print(f" Qualifying {len(MOCK_ENRICHED_LEADS)} leads...\n")
-        try:
-            output = await run_qualification_agent(
-                leads=MOCK_ENRICHED_LEADS,
-                enrichment_output=MOCK_ENRICHMENT_OUTPUT,
-                onboarding=MOCK_ONBOARDING_ANDELA,
-                # onboarding=mock_onboarding,
-            )
-
-            print("\n" + "=" * 80)
-            print(" QUALIFICATION REPORT")
-            print("=" * 80)
-
-            def print_decision(d: LeadDecision):
-                icon = {"approved": "✅", "review": "⚠️", "rejected": "❌"}[d.decision]
-                print(f"\n{icon} Lead {d.lead_index}: {d.lead_name}  [ICP fit: {d.icp_match_score:.0%}]")
-                print(f"   Decision: {d.decision_reason}")
-                if d.match_breakdown:
-                    print("   Scores:")
-                    for dim in d.match_breakdown:
-                        print(f"     {dim.dimension}: {dim.score:.0%} — {dim.note}")
-                if d.blocking_issues:
-                    print(f"    Blockers: {'; '.join(d.blocking_issues)}")
-                if d.review_flags:
-                    print(f"   Flags: {'; '.join(d.review_flags)}")
-                if d.recommended_angle:
-                    print(f"   Pitch angle: {d.recommended_angle}")
-
-            print(f"\n APPROVED ({len(output.approved)})")
-            for d in output.approved:
-                print_decision(d)
-
-            print(f"\n  REVIEW ({len(output.review)})")
-            for d in output.review:
-                print_decision(d)
-
-            print(f"\n REJECTED ({len(output.rejected)})")
-            for d in output.rejected:
-                print_decision(d)
-
-            print(f"\n Batch summary: {output.batch_summary}")
-
-        except Exception as e:
-            print(f" Qualification failed: {e}")
-            raise
-
-    asyncio.run(main())

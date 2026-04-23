@@ -206,7 +206,7 @@ FIXTURE_LEADS = [
         "last_name": "Syahrial",
         "title": "Principal Product Manager",
         "seniority": None,
-        "email": "marshall.syahrial@commonsecuritization.com",
+        "email": "naheemquadri3410@gmail.com",
         "email_status": "VERIFIED",
         "phone": None,
         "company": "Financial Technology",
@@ -225,7 +225,7 @@ FIXTURE_LEADS = [
         "last_name": "Kather",
         "title": "Product Manager II",
         "seniority": None,
-        "email": "shamali.kather@73strings.com",
+        "email": "naheemquadri3410@gmail.com",
         "email_status": "VERIFIED",
         "phone": None,
         "company": "73 Strings",
@@ -267,7 +267,7 @@ FIXTURE_QUERIES = [
         'site:linkedin.com/in/marshall-s-14135b34 "Marshall Syahrial"',
         '"Marshall Syahrial" "Principal Product Manager" "Financial Technology"',
         '"Marshall Syahrial" "Financial Technology" interview OR news OR announcement',
-        '"marshall.syahrial@commonsecuritization.com" contact OR email',
+        '"naheemquadri3410@gmail.com" contact OR email',
         '"Marshall Syahrial" speaker OR author OR podcast "Financial Services"',
     ],
     # Ar. Shamali Kather (lead index 2)
@@ -275,7 +275,7 @@ FIXTURE_QUERIES = [
         'site:linkedin.com/in/ar-shamali-kather-2071b7112 "Ar. Shamali Kather"',
         '"Ar. Shamali Kather" "Product Manager II" "73 Strings"',
         '"Ar. Shamali Kather" "73 Strings" interview OR news OR announcement',
-        '"shamali.kather@73strings.com" contact OR email',
+        '"naheemquadri3410@gmail.com" contact OR email',
         '"Ar. Shamali Kather" speaker OR author OR podcast "Financial Services"',
     ],
     # Michael Greenlief (lead index 3)
@@ -585,7 +585,7 @@ FIXTURE_EMAIL_SEQUENCES = [
     # Lead 2: Ar. Shamali Kather — approved
     {
         "lead_index": 2,
-        "lead_email": "shamali.kather@73strings.com",
+        "lead_email": "naheemquadri3410@gmail.com",
         "email_1": {
             "subject": "[PLACEHOLDER] Email 1 for Ar. Shamali Kather",
             "body": "PLACEHOLDER — run email agent to generate real sequence.\n\n{{sender_name}}",
@@ -848,7 +848,7 @@ def print_summary(db):
 
 def reset_all():
     """Wipe all local data — DB, queues, storage."""
-    from config.settings import settings
+    from backend.config.settings import settings
 
     paths = [
         settings.local.db_path,

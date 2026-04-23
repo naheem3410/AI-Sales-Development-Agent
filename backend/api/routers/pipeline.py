@@ -87,7 +87,7 @@ async def _run_pipeline_background(
                    and Lambda would pick it up.
     """
     try:
-        from core.pipeline_runner import PipelineRunner
+        from backend.core.pipeline_runner import PipelineRunner
         runner = PipelineRunner()
 
         # Get campaign for website_url and company_name
@@ -96,8 +96,8 @@ async def _run_pipeline_background(
 
         # Run onboarding pass-through (onboarding already ran on campaign creation)
         # Build the orchestration pass-through message from existing DB state
-        from core.messages import PipelineMessage, OnboardingPayload
-        from core.enums import AgentName, QueueName
+        from backend.core.messages import PipelineMessage, OnboardingPayload
+        from backend.core.enums import AgentName, QueueName
         import uuid
 
         icp_data = db.get_icp(campaign_id)
@@ -187,9 +187,9 @@ async def _run_pipeline_production(
     Production mode: push pipeline start message to SQS.
     Lambda picks it up and runs each step.
     """
-    from infrastructure.factory import get_queue
-    from core.messages import PipelineMessage, OnboardingPayload
-    from core.enums import AgentName, QueueName
+    from backend.infrastructure.factory import get_queue
+    from backend.core.messages import PipelineMessage, OnboardingPayload
+    from backend.core.enums import AgentName, QueueName
     import uuid
 
     db = get_db()

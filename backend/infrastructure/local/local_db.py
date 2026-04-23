@@ -65,7 +65,34 @@ class LocalDatabase:
         with self._conn() as conn:
             conn.executescript(SCHEMA_SQL)
             conn.executescript(FUTURE_SCHEMA_SQL)
+            self._migrate_meeting_tracking(conn)
         logger.info("[LocalDB] Schema initialised.")
+
+    def _migrate_meeting_tracking(self, conn: sqlite3.Connection) -> None:
+        """Existing DBs may predate Cal webhook columns — add missing columns."""
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='meeting_tracking'"
+        ).fetchone()
+        if not row:
+            return
+        existing = {
+            r[1]
+            for r in conn.execute("PRAGMA table_info(meeting_tracking)").fetchall()
+        }
+        for col, sql_type in (
+            ("cal_booking_uid", "TEXT"),
+            ("meeting_title", "TEXT"),
+            ("meeting_start_at", "TEXT"),
+            ("meeting_end_at", "TEXT"),
+            ("attendee_email", "TEXT"),
+            ("attendee_name", "TEXT"),
+            ("cal_event_type", "TEXT"),
+        ):
+            if col not in existing:
+                conn.execute(
+                    f"ALTER TABLE meeting_tracking ADD COLUMN {col} {sql_type}"
+                )
+                logger.info(f"[LocalDB] Added meeting_tracking.{col}")
 
     # ── Users 
 
@@ -95,10 +122,18 @@ class LocalDatabase:
 
     
     def create_user_with_id(self, user_id: str, email: str, full_name: Optional[str] = None) -> Dict:
-        """Create a user with a pre-supplied ID (e.g. Clerk user_id)."""
+        """Create a user with a pre-supplied ID (e.g. Clerk user_id).
+
+        Empty email is stored as a synthetic unique address so UNIQUE(email) does not
+        collide on '' across users (INSERT OR IGNORE would otherwise skip the row).
+        """
+        email_stored = (email or "").strip()
+        if not email_stored:
+            email_stored = f"{user_id}@users.clerk.local"
+
         user = {
             "id": user_id,
-            "email": email,
+            "email": email_stored,
             "full_name": full_name,
             "stripe_customer_id": None,
             "plan": "paid",
@@ -112,7 +147,13 @@ class LocalDatabase:
                 user
             )
         logger.info(f"[LocalDB] Created user with Clerk ID {user_id}")
-        return self.get_user(user_id)
+        row = self.get_user(user_id)
+        if row is None:
+            logger.error(
+                f"[LocalDB] create_user_with_id: no row for {user_id} after insert (duplicate email?)"
+            )
+            raise RuntimeError(f"Failed to create or load user {user_id}")
+        return row
  
     def get_user_by_email(self, email: str) -> Optional[Dict]:
         with self._conn() as conn:
@@ -415,18 +456,187 @@ class LocalDatabase:
         return saved
 
     def get_leads_for_campaign(self, campaign_id: str, status: Optional[str] = None) -> List[Dict]:
+        """List leads. Filter values match campaign UI chips (pipeline history, not only current status).
+
+        Semantic filters (show leads that ever reached that stage / outcome):
+          ingested, enriched, qualified (approved), review, disqualified (rejected at qual),
+          email_written (sequence exists), converted (meeting booked).
+        Any other ``status`` falls back to exact ``leads.status`` match.
+        """
         with self._conn() as conn:
-            if status:
-                rows = conn.execute(
-                    "SELECT * FROM leads WHERE campaign_id = ? AND status = ? ORDER BY created_at",
-                    (campaign_id, status)
-                ).fetchall()
-            else:
+            if not status:
                 rows = conn.execute(
                     "SELECT * FROM leads WHERE campaign_id = ? ORDER BY created_at",
-                    (campaign_id,)
+                    (campaign_id,),
                 ).fetchall()
+                return [dict(r) for r in rows]
+
+            # ── Semantic filters (historical / outcome-based)
+            if status == "ingested":
+                rows = conn.execute(
+                    "SELECT * FROM leads WHERE campaign_id = ? ORDER BY created_at",
+                    (campaign_id,),
+                ).fetchall()
+                return [dict(r) for r in rows]
+
+            if status == "enriched":
+                rows = conn.execute(
+                    """
+                    SELECT l.* FROM leads l
+                    WHERE l.campaign_id = ?
+                      AND EXISTS (
+                        SELECT 1 FROM enrichment_results e
+                        WHERE e.lead_id = l.id AND e.campaign_id = l.campaign_id
+                      )
+                    ORDER BY l.created_at
+                    """,
+                    (campaign_id,),
+                ).fetchall()
+                return [dict(r) for r in rows]
+
+            if status == "qualified":
+                rows = conn.execute(
+                    """
+                    SELECT l.* FROM leads l
+                    WHERE l.campaign_id = ?
+                      AND (
+                        SELECT q.decision FROM qualification_results q
+                        WHERE q.lead_id = l.id AND q.campaign_id = l.campaign_id
+                        ORDER BY q.created_at DESC, q.id DESC LIMIT 1
+                      ) = 'approved'
+                    ORDER BY l.created_at
+                    """,
+                    (campaign_id,),
+                ).fetchall()
+                return [dict(r) for r in rows]
+
+            if status == "review":
+                rows = conn.execute(
+                    """
+                    SELECT l.* FROM leads l
+                    WHERE l.campaign_id = ?
+                      AND (
+                        SELECT q.decision FROM qualification_results q
+                        WHERE q.lead_id = l.id AND q.campaign_id = l.campaign_id
+                        ORDER BY q.created_at DESC, q.id DESC LIMIT 1
+                      ) = 'review'
+                    ORDER BY l.created_at
+                    """,
+                    (campaign_id,),
+                ).fetchall()
+                return [dict(r) for r in rows]
+
+            if status == "disqualified":
+                rows = conn.execute(
+                    """
+                    SELECT l.* FROM leads l
+                    WHERE l.campaign_id = ?
+                      AND (
+                        SELECT q.decision FROM qualification_results q
+                        WHERE q.lead_id = l.id AND q.campaign_id = l.campaign_id
+                        ORDER BY q.created_at DESC, q.id DESC LIMIT 1
+                      ) = 'rejected'
+                    ORDER BY l.created_at
+                    """,
+                    (campaign_id,),
+                ).fetchall()
+                return [dict(r) for r in rows]
+
+            if status == "email_written":
+                rows = conn.execute(
+                    """
+                    SELECT l.* FROM leads l
+                    WHERE l.campaign_id = ?
+                      AND EXISTS (
+                        SELECT 1 FROM email_sequences es
+                        WHERE es.lead_id = l.id AND es.campaign_id = l.campaign_id
+                      )
+                    ORDER BY l.created_at
+                    """,
+                    (campaign_id,),
+                ).fetchall()
+                return [dict(r) for r in rows]
+
+            if status == "converted":
+                rows = conn.execute(
+                    """
+                    SELECT l.* FROM leads l
+                    WHERE l.campaign_id = ?
+                      AND EXISTS (
+                        SELECT 1 FROM meeting_tracking m
+                        WHERE m.lead_id = l.id AND m.campaign_id = l.campaign_id
+                      )
+                    ORDER BY l.created_at
+                    """,
+                    (campaign_id,),
+                ).fetchall()
+                return [dict(r) for r in rows]
+
+            rows = conn.execute(
+                "SELECT * FROM leads WHERE campaign_id = ? AND status = ? ORDER BY created_at",
+                (campaign_id, status),
+            ).fetchall()
             return [dict(r) for r in rows]
+
+    def resolve_lead_review_decision(
+        self, campaign_id: str, lead_id: str, approve: bool
+    ) -> Dict:
+        """
+        Latest qualification row must have decision='review'.
+        Approve → decision approved; if lead.status is review, set qualified.
+        Reject → decision rejected and lead disqualified.
+        """
+        now = _now()
+        with self._conn() as conn:
+            qrow = conn.execute(
+                """
+                SELECT id, decision FROM qualification_results
+                WHERE lead_id = ? AND campaign_id = ?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (lead_id, campaign_id),
+            ).fetchone()
+            if not qrow:
+                raise ValueError("No qualification record for this lead.")
+            qid = qrow["id"]
+            if qrow["decision"] != "review":
+                raise ValueError("Lead is not awaiting review (latest qualification is not review).")
+
+            lrow = conn.execute(
+                "SELECT status FROM leads WHERE id = ? AND campaign_id = ?",
+                (lead_id, campaign_id),
+            ).fetchone()
+            if not lrow:
+                raise ValueError("Lead not found in campaign.")
+
+            lead_status = lrow["status"]
+
+            if approve:
+                conn.execute(
+                    "UPDATE qualification_results SET decision = ?, updated_at = ? WHERE id = ?",
+                    ("approved", now, qid),
+                )
+                if lead_status == LeadStatus.REVIEW.value:
+                    conn.execute(
+                        "UPDATE leads SET status = ?, updated_at = ? WHERE id = ?",
+                        (LeadStatus.QUALIFIED.value, now, lead_id),
+                    )
+            else:
+                conn.execute(
+                    "UPDATE qualification_results SET decision = ?, updated_at = ? WHERE id = ?",
+                    ("rejected", now, qid),
+                )
+                conn.execute(
+                    "UPDATE leads SET status = ?, updated_at = ? WHERE id = ?",
+                    (LeadStatus.DISQUALIFIED.value, now, lead_id),
+                )
+
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM leads WHERE id = ? AND campaign_id = ?",
+                (lead_id, campaign_id),
+            ).fetchone()
+            return dict(row) if row else {}
 
     def update_lead_status(self, lead_id: str, status: LeadStatus):
         with self._conn() as conn:
@@ -600,22 +810,53 @@ class LocalDatabase:
                 "SELECT COUNT(*) FROM leads WHERE campaign_id = ?", (campaign_id,)
             ).fetchone()[0]
             enriched = conn.execute(
-                "SELECT COUNT(*) FROM enrichment_results WHERE campaign_id = ?", (campaign_id,)
+                "SELECT COUNT(DISTINCT lead_id) FROM enrichment_results WHERE campaign_id = ?",
+                (campaign_id,),
             ).fetchone()[0]
             approved = conn.execute(
-                "SELECT COUNT(*) FROM qualification_results WHERE campaign_id = ? AND decision = 'approved'",
-                (campaign_id,)
+                """
+                SELECT COUNT(*) FROM leads l
+                WHERE l.campaign_id = ?
+                  AND (
+                    SELECT q.decision FROM qualification_results q
+                    WHERE q.lead_id = l.id AND q.campaign_id = l.campaign_id
+                    ORDER BY q.created_at DESC, q.id DESC LIMIT 1
+                  ) = 'approved'
+                """,
+                (campaign_id,),
             ).fetchone()[0]
             review = conn.execute(
-                "SELECT COUNT(*) FROM qualification_results WHERE campaign_id = ? AND decision = 'review'",
-                (campaign_id,)
+                """
+                SELECT COUNT(*) FROM leads l
+                WHERE l.campaign_id = ?
+                  AND (
+                    SELECT q.decision FROM qualification_results q
+                    WHERE q.lead_id = l.id AND q.campaign_id = l.campaign_id
+                    ORDER BY q.created_at DESC, q.id DESC LIMIT 1
+                  ) = 'review'
+                """,
+                (campaign_id,),
             ).fetchone()[0]
             rejected = conn.execute(
-                "SELECT COUNT(*) FROM qualification_results WHERE campaign_id = ? AND decision = 'rejected'",
-                (campaign_id,)
+                """
+                SELECT COUNT(*) FROM leads l
+                WHERE l.campaign_id = ?
+                  AND (
+                    SELECT q.decision FROM qualification_results q
+                    WHERE q.lead_id = l.id AND q.campaign_id = l.campaign_id
+                    ORDER BY q.created_at DESC, q.id DESC LIMIT 1
+                  ) = 'rejected'
+                """,
+                (campaign_id,),
             ).fetchone()[0]
             emails_written = conn.execute(
-                "SELECT COUNT(*) FROM email_sequences WHERE campaign_id = ?", (campaign_id,)
+                """SELECT COUNT(DISTINCT lead_id) FROM email_sequences WHERE campaign_id = ?""",
+                (campaign_id,),
+            ).fetchone()[0]
+            converted = conn.execute(
+                """SELECT COUNT(DISTINCT lead_id) FROM meeting_tracking
+                   WHERE campaign_id = ?""",
+                (campaign_id,),
             ).fetchone()[0]
         return {
             "campaign_id": campaign_id,
@@ -625,6 +866,7 @@ class LocalDatabase:
             "review": review,
             "rejected": rejected,
             "emails_written": emails_written,
+            "converted": converted,
         }
 
 

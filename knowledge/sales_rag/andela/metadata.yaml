@@ -1,0 +1,14 @@
+# Sales RAG bundle — Andela (reference company for demos)
+company_key: andela
+display_name: Andela
+primary_url: https://www.andela.com/
+demo_entry_url: https://www.andela.com/
+focus: Talent & technology — remote engineering talent, AI-related training and deployment narratives (verify on site)
+tags:
+  - b2b
+  - talent
+  - engineering
+  - africa
+last_updated: "2026-04-23"
+notes: >
+  Andela’s offerings evolve; refresh facts from andela.com before external use.

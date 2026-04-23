@@ -1,0 +1,15 @@
+# Sales RAG bundle — HubSpot (reference company for demos)
+company_key: hubspot
+display_name: HubSpot
+primary_url: https://www.hubspot.com
+demo_entry_url: https://www.hubspot.com/home-b
+focus: B2B SaaS — CRM, marketing, sales, and service software
+tags:
+  - b2b
+  - saas
+  - crm
+  - marketing-automation
+last_updated: "2026-04-23"
+notes: >
+  Verify pricing, packaging, and metrics on hubspot.com before customer-facing claims.
+  Use this bundle for RAG context when campaigns target HubSpot-like ICPs or HubSpot explicitly.

@@ -56,6 +56,7 @@ async def get_campaign_summary(
         review=summary["review"],
         rejected=summary["rejected"],
         emails_written=summary["emails_written"],
+        converted=summary.get("converted", 0),
         approval_rate=approval_rate,
         enrichment_rate=enrichment_rate,
     )

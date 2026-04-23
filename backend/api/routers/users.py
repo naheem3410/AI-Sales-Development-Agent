@@ -12,7 +12,7 @@ from typing import Dict
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from backend.api.dependencies.auth import get_current_user
+from backend.api.dependencies.auth import clerk_subscription_grants_access, get_current_user
 from backend.api.schemas.responses import UserResponse
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ async def _check_subscription(clerk_user_id: str) -> bool:
                 return False
             resp.raise_for_status()
             sub = resp.json()
-            return sub.get("status") in ("active", "trialing")
+            return clerk_subscription_grants_access(sub)
     except Exception as e:
         logger.warning(f"[Users] Subscription check failed for {clerk_user_id}: {e}")
         return False

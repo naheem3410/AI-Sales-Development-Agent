@@ -112,8 +112,9 @@ def _build_brief_response(brief: Dict) -> BriefResponse:
 
 async def _run_onboarding_background(campaign_id: str, user_id: str, website_url: str, company_name: Optional[str]):
     """Run onboarding agent in background after campaign is created."""
+    print(f"[Campaigns] Running onboarding background for campaign {campaign_id}")
     try:
-        from core.pipeline_runner import PipelineRunner
+        from backend.core.pipeline_runner import PipelineRunner
         runner = PipelineRunner()
         await runner.run_onboarding(
             campaign_id=campaign_id,
@@ -150,7 +151,7 @@ async def create_campaign(
 
     # Provision orchestration slot immediately
     db.init_orchestration_state(campaign["id"], user["id"])
-
+    print(f"[Campaigns] Initialized orchestration state for campaign {campaign['id']}")
     # Run onboarding in background
     background_tasks.add_task(
         _run_onboarding_background,

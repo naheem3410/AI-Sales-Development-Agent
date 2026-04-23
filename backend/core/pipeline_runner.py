@@ -113,14 +113,23 @@ class PipelineRunner:
 
         try:
             # Import here to keep agent code decoupled from infrastructure
-            from backend.core.onboarding.onboarding_agent import run_onboarding_agent, OnboardingAgentInput
+            from backend.config.settings import settings
+            from backend.core.onboarding.onboarding_agent import OnboardingAgentInput
 
-            result = await run_onboarding_agent(
-                OnboardingAgentInput(
-                    website_url=website_url,
-                    company_name=company_name
-                )
+            onboarding_input = OnboardingAgentInput(
+                website_url=website_url,
+                company_name=company_name,
             )
+            if settings.use_onboarding_orchestrator:
+                from backend.core.onboarding.onboarding_orchestrator import (
+                    run_onboarding_orchestrator,
+                )
+
+                result = await run_onboarding_orchestrator(onboarding_input)
+            else:
+                from backend.core.onboarding.onboarding_agent import run_onboarding_agent
+
+                result = await run_onboarding_agent(onboarding_input)
 
             # Persist ICP and product brief
             icp_data = result.icp.model_dump()
@@ -287,8 +296,8 @@ class PipelineRunner:
                 icp=icp,
                 fetch_all=False,
                 enrich_mobile=False,
-                test_mode=True,
-                use_mock=True,
+                test_mode=False,
+                use_mock=False,
             )
 
             if not leads:
@@ -413,7 +422,15 @@ class PipelineRunner:
 
             db_leads = self.db.get_leads_for_campaign(campaign_id)
 
-            for enriched, db_lead in zip(result.enriched_leads, db_leads):
+            for enriched in result.enriched_leads:
+                li = enriched.lead_index
+                if li < 1 or li > len(db_leads):
+                    logger.warning(
+                        f"[PipelineRunner] Skipping enrichment with lead_index={li} "
+                        f"(campaign has {len(db_leads)} leads)"
+                    )
+                    continue
+                db_lead = db_leads[li - 1]
                 enriched_dict = enriched.model_dump()
 
                 # Offload large evidence to storage
@@ -729,12 +746,17 @@ class PipelineRunner:
                     missing_fields=icp_data.get("missing_fields") or [],
                 )
 
+                user_row = self.db.get_user(user_id)
+                sender_display_name = (user_row or {}).get("full_name")
+
                 # ── Run email agent 
                 result = await run_email_copywriting_agent(
                     approved_leads=approved_leads,
                     enrichment_output_map=enrichment_map,
                     decisions=approved_decisions,
                     onboarding=onboarding,
+                    user_id=user_id,
+                    sender_display_name=sender_display_name,
                 )
 
                 # ── Persist sequences 
@@ -891,17 +913,3 @@ class PipelineRunner:
             "processed_at": message.processed_at.isoformat() if message.processed_at else None,
             "completed_at": message.completed_at.isoformat() if message.completed_at else None,
         })
-
-# Test main
-
-async def main():
-    runner = PipelineRunner()
-    await runner.run_full_pipeline(
-        user_id="97a8e1d6-f52c-45fd-8405-6f242485654c",
-        campaign_name="Andela Campaign",
-        website_url="https://www.andela.com/",
-        company_name="Andela",
-    )
-
-if __name__ == "__main__":
-    asyncio.run(main())

@@ -68,3 +68,13 @@ class UpdateEmailRequest(BaseModel):
     email_2_body: Optional[str] = None
     email_3_subject: Optional[str] = None
     email_3_body: Optional[str] = None
+
+
+# ── Leads ─────────────────────────────────────────────────────────────────────
+
+class LeadReviewResolutionRequest(BaseModel):
+    resolution: Literal["approve", "reject"] = Field(
+        ...,
+        description="Approve moves latest qualification from review to approved (and lead to qualified if status was review). "
+        "Reject marks qualification rejected and lead disqualified.",
+    )

@@ -77,6 +77,7 @@ class CampaignSummary(BaseModel):
     review: int
     rejected: int
     emails_written: int
+    converted: int = 0
 
 
 class CampaignResponse(BaseModel):
@@ -213,5 +214,6 @@ class AnalyticsSummaryResponse(BaseModel):
     review: int
     rejected: int
     emails_written: int
+    converted: int = 0
     approval_rate: Optional[float]
     enrichment_rate: Optional[float]

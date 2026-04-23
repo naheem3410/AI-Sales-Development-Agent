@@ -146,7 +146,25 @@ PROSPEO_VALID_INDUSTRIES = {
     "Executive Search Services",
 }
 
-# Normalized Lead output (same shape regardless of provider) 
+
+def _is_worldwide_style_location(loc: str) -> bool:
+    """True when ICP location text implies no usable geo filter (substring match)."""
+    s = loc.strip().lower()
+    if not s:
+        return True
+    return (
+        "global" in s
+        or "worldwide" in s
+        or "multiple regions" in s
+    )
+
+
+def _icp_locations_for_geo_filter(locations: List[str]) -> List[str]:
+    """Keep only locations safe to send as provider geo filters."""
+    return [loc for loc in locations if not _is_worldwide_style_location(loc)]
+
+
+# Normalized Lead output (same shape regardless of provider)
 
 class LeadResult(BaseModel):
     name: Optional[str] = Field(None, description="Full name of the lead.")
@@ -210,7 +228,7 @@ class LeadProvider(ABC):
             print(json.dumps(self._preview(p), indent=2))
 
         # In test mode, only enrich 1 record
-        to_enrich = people[:1] if test_mode else people
+        to_enrich = people[:1] if test_mode else people[:10]
         print(f"\n  Enriching {len(to_enrich)} record(s)...")
 
         leads = []
@@ -264,11 +282,8 @@ class ProspeoProvider(LeadProvider):
             if mapped:
                 filters["person_seniority"] = {"include": mapped}
 
-        # Locations — skip global/worldwide
-        clean_locations = [
-            loc for loc in icp.locations
-            if loc.lower() not in ["global", "global/multiple regions", "worldwide"]
-        ]
+        # Locations — omit worldwide-style phrases (substring: global, worldwide, …)
+        clean_locations = _icp_locations_for_geo_filter(icp.locations)
         if clean_locations:
             filters["person_location_search"] = {"include": clean_locations}
 
@@ -483,10 +498,7 @@ class ApolloProvider(LeadProvider):
         if icp.seniority:
             params["person_seniorities[]"] = icp.seniority
 
-        clean_locations = [
-            loc for loc in icp.locations
-            if loc.lower() not in ["global", "global/multiple regions", "worldwide"]
-        ]
+        clean_locations = _icp_locations_for_geo_filter(icp.locations)
         if clean_locations:
             params["person_locations[]"] = clean_locations
 
@@ -630,53 +642,3 @@ def get_provider(name: Literal["prospeo", "apollo"]) -> LeadProvider:
 
     else:
         raise ValueError(f"Unknown provider: {name}. Choose 'prospeo' or 'apollo'.")
-
-
-# EXAMPLE USAGE
-if __name__ == "__main__":
-
-    stripe_icp = ICPOutput(
-        target_type="business",
-        industry=["Financial Services", "Technology"],
-        company_size_min=51,
-        company_size_max=10000,
-        funding_status=None,
-        job_titles=["CFO", "Fintech Manager", "Product Manager"],
-        seniority=["c_suite", "vp", "director", "manager"],
-        locations=["Global"],
-        tech_stack=None,
-        demographics=None
-    )
-
-    andela_icp = ICPOutput(
-        target_type="business",
-        industry=["AI/ML", "Tech services", "Software development"],
-        company_size_min=50,
-        company_size_max=None,
-        funding_status=None,
-        job_titles=["AI engineers", "Data scientists", "ML engineers", "AI team leads"],
-        seniority=["owner", "founder", "c_suite", "partner", "vp", "head", "director"],
-        locations=["Global"],
-        tech_stack=None,
-        demographics=None
-    )
-
-    # Switch provider here: "prospeo" or "apollo"
-    provider = get_provider("prospeo")
-
-    leads = provider.get_leads(
-        icp=stripe_icp,
-        fetch_all=False,     # False = first 25 only | True = all pages
-        enrich_mobile=False, # True = costs 10 credits per person
-        test_mode=True,       # True = only enrich 1 record (for testing)
-        use_mock=True
-    )
-
-    print(leads)
-
-    print("\n===== FINAL LEADS =====")
-    if not leads:
-        print(" No leads returned.")
-    else:
-        for lead in leads:
-            print(json.dumps(lead.model_dump(exclude_none=True), indent=2))

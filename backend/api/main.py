@@ -111,7 +111,7 @@ async def health():
 
 # ── Routers 
 
-from backend.api.routers import webhooks, users, campaigns, pipeline, leads, emails, analytics
+from backend.api.routers import webhooks, users, campaigns, pipeline, leads, emails, analytics, outreach, outreach_webhooks, rag
 
 app.include_router(webhooks.router)
 app.include_router(users.router)
@@ -120,6 +120,9 @@ app.include_router(pipeline.router)
 app.include_router(leads.router)
 app.include_router(emails.router)
 app.include_router(analytics.router)
+app.include_router(outreach.router)
+app.include_router(outreach_webhooks.router)
+app.include_router(rag.router)
 
 logger.info("[SDA API] All routers registered.")
 logger.info(f"[SDA API] CORS origins: {ALLOWED_ORIGINS}")

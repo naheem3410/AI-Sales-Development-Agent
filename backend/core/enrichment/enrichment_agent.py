@@ -2,7 +2,7 @@ import asyncio
 import httpx
 import logging
 import os
-from typing import Any, Dict, List, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal, Tuple
 from urllib.parse import urlparse
 
 from agents import Agent, Runner, function_tool, MaxTurnsExceeded
@@ -10,11 +10,18 @@ from agents.extensions.models.litellm_model import LitellmModel
 from pydantic import BaseModel, Field, ValidationError
 
 from backend.core.ingestion.lead_ingestion import LeadResult
-from backend.core.query.generate_queries import QueryGeneratorOutput, LeadQueries
+from backend.core.observability import agent_observe
+from backend.core.enrichment.instruction import ENRICHMENT_INSTRUCTIONS
+from backend.core.query.generate_queries import QueryGeneratorOutput
+from backend.core.utils.llm_batch import (
+    MAX_PARALLEL,
+    async_run_with_retries,
+    chunk_indices,
+)
+import re
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-import re
 
 
 # Models
@@ -316,89 +323,66 @@ async def search_serper_bulk(queries: List[str]) -> List[SearchResultItem]:
     logger.info(f"[Serper] Total normalized items: {len(normalized)}")
     return normalized
 
-# Enrichment instructions
 
-ENRICHMENT_INSTRUCTIONS = """
-You are a Lead Enrichment Specialist. Search for leads and extract structured data 
-strictly from what the tool returns.
+def _post_process_enrichment_output(output: LeadEnrichmentAgentOutput) -> None:
+    """URL scrubbing, signal cleanup, and logging on merged enrichment output."""
+    url_pattern = re.compile(r"https?://\S+")
 
-== TOOL USAGE ==
-- Call `search_serper_bulk` ONCE per lead with ALL 5 queries as a list.
-- Do NOT split queries across multiple calls for the same lead.
-- Do NOT call the tool more than once per lead.
+    for enriched in output.enriched_leads:
+        raw_urls = {item.link for item in enriched.raw_search_evidence if item.link}
 
-== raw_search_evidence — CRITICAL ==
-- Capture EVERY item the tool returns: organic, knowledge_graph, people_also_ask, sitelink, related_search.
-- Do NOT filter, truncate, merge, or drop any item.
-- Do NOT modify titles, links, or snippets.
-- A lead with 5 queries should typically produce 10–50 raw_search_evidence items.
+        hallucinated = [u for u in enriched.evidence_used if u not in raw_urls]
+        if hallucinated:
+            logger.warning(
+                f"[EnrichmentAgent] Lead {enriched.lead_index}: "
+                f"Removing {len(hallucinated)} hallucinated URL(s): {hallucinated}"
+            )
+            enriched.evidence_used = [u for u in enriched.evidence_used if u in raw_urls]
 
-== EXTRACTION RULES ==
+        before = len(enriched.enriched_data.company_signals)
+        enriched.enriched_data.company_signals = [
+            kv for kv in enriched.enriched_data.company_signals
+            if kv.value.strip().lower() not in ("unknown", "n/a", "", "none")
+        ]
+        removed = before - len(enriched.enriched_data.company_signals)
+        if removed:
+            logger.info(
+                f"[EnrichmentAgent] Lead {enriched.lead_index}: "
+                f"Scrubbed {removed} empty/unknown company_signal(s)"
+            )
 
-1. current_title
-   - Prefer LinkedIn or official company page snippets.
-   - Format: "Job Title at Company Name"
-   - Leave null if not found — do NOT guess.
+        clean_achievements = []
+        for achievement in enriched.enriched_data.notable_achievements:
+            cleaned = url_pattern.sub("", achievement).strip().rstrip("()")
+            if cleaned:
+                clean_achievements.append(cleaned)
+        enriched.enriched_data.notable_achievements = clean_achievements
 
-2. social_links
-   - Only include URLs that appear verbatim in the tool output.
-   - LinkedIn, Twitter/X, GitHub, personal site, other platforms.
+        if len(enriched.query_slot_coverage) != 5:
+            logger.warning(
+                f"[EnrichmentAgent] Lead {enriched.lead_index}: "
+                f"query_slot_coverage has {len(enriched.query_slot_coverage)} entries, expected 5"
+            )
 
-3. company_signals
-   - ONLY populate with real values found in results.
-   - NEVER use "Unknown", "N/A", "none", or empty string — omit the key.
-   - Prioritize: knowledge_graph metadata > LinkedIn company page > Crunchbase/news.
-   - Keys to extract when found: company_name, industry, headquarters, founded,
-     company_size, ceo, founders, parent_company, company_type, stock_ticker.
-
-4. notable_achievements
-   - Plain text strings only — NO URLs embedded in the achievement string.
-   - Format: "Spoke at FinTech Summit 2023" not "Spoke at FinTech Summit (https://...)"
-   - The URL goes into evidence_used, not into the achievement text.
-   - Only from explicit evidence: talks, podcasts, articles, awards, press mentions.
-   - Do NOT infer or assume.
-
-5. discrepancies — ALWAYS CHECK
-   - Compare found data against the original lead fields provided in the prompt.
-   - Check: name spelling, company name, job title, location.
-   - If search returns a different company name than the lead's known company → flag it.
-   - Format: field, original_value, found_value, source_url.
-
-6. query_slot_coverage
-   - One KeyValue per query: key="Q1" through "Q5".
-   - Value = brief description of what was found, or "no results returned".
-   - This is mandatory — always produce 5 entries.
-
-7. confidence_score (0.0–1.0)
-   - 1.0: LinkedIn confirmed + company verified + multiple corroborating sources
-   - 0.7: LinkedIn found, title confirmed, company partially verified
-   - 0.4: Name found but role/company unclear or contradictory
-   - 0.1: Very little or no relevant results
-
-8. evidence_used
-   - Only URLs present verbatim in raw_search_evidence.
-   - Must directly support a claim in enriched_data.
-
-== ANTI-HALLUCINATION ==
-- NEVER invent URLs, snippets, or domains.
-- NEVER fill company_signals with "Unknown" — omit missing fields.
-- evidence_used must only contain URLs from raw_search_evidence.
-- If a query returns nothing useful, state that in query_slot_coverage.
-
-== OUTPUT ==
-- One LeadEnrichmentResult per lead, in input order.
-- lead_index is 1-based.
-"""
+        logger.info(
+            f"[EnrichmentAgent] Lead {enriched.lead_index} '{enriched.lead_name}': "
+            f"status={enriched.identity_status}, "
+            f"confidence={enriched.confidence_score:.2f}, "
+            f"raw_evidence={len(enriched.raw_search_evidence)}, "
+            f"discrepancies={len(enriched.discrepancies)}"
+        )
 
 
-# Run lead enrichment agent
-
-async def run_lead_enrichment_agent(
+async def _enrich_leads_one_batch(
     leads: List[LeadResult],
     query_output: QueryGeneratorOutput,
+    global_offset_0based: int,
 ) -> LeadEnrichmentAgentOutput:
+    """Run the enrichment agent for one batch; remaps ``lead_index`` to global 1-based positions."""
+    if not leads:
+        return LeadEnrichmentAgentOutput(enriched_leads=[])
 
-    model = LitellmModel(model="openai/gpt-4.1-nano")
+    model = LitellmModel(model="openai/gpt-4.1")
 
     agent = Agent(
         name="EnrichmentAgent",
@@ -414,11 +398,13 @@ async def run_lead_enrichment_agent(
         "Capture ALL tool results into raw_search_evidence — do not filter or truncate.\n",
         "Compare found data against the known lead fields and flag any discrepancies.\n",
         "notable_achievements must be plain text only — no URLs in the string.\n\n",
+        f"Use these global lead_index values in your output for each lead, in order: "
+        f"{', '.join(str(global_offset_0based + i + 1) for i in range(len(leads)))}.\n\n",
     ]
 
     for i, (lead, q_res) in enumerate(zip(leads, query_output.results), 1):
         name = lead.name or f"{lead.first_name or ''} {lead.last_name or ''}".strip() or f"Lead {i}"
-        prompt_parts.append(f"LEAD {i}: {name}")
+        prompt_parts.append(f"LEAD {i} (global lead_index={global_offset_0based + i}): {name}")
         if lead.company:
             prompt_parts.append(f"  Known company: {lead.company}")
         if lead.title:
@@ -433,12 +419,15 @@ async def run_lead_enrichment_agent(
         prompt_parts.append("")
 
     prompt = "\n".join(prompt_parts)
-    logger.info(f"[EnrichmentAgent] Starting for {len(leads)} lead(s)")
+    logger.info(
+        f"[EnrichmentAgent] Batch starting at offset {global_offset_0based} "
+        f"for {len(leads)} lead(s)"
+    )
 
     try:
-        result = await Runner.run(agent, prompt, max_turns=len(leads) * 4)
+        result = await Runner.run(agent, prompt, max_turns=max(len(leads) * 4, 4))
     except MaxTurnsExceeded:
-        logger.error("[EnrichmentAgent] Max turns exceeded")
+        logger.error("[EnrichmentAgent] Max turns exceeded for batch")
         return LeadEnrichmentAgentOutput(enriched_leads=[])
 
     try:
@@ -450,199 +439,64 @@ async def run_lead_enrichment_agent(
         logger.error(f"[EnrichmentAgent] Validation error: {e.json()}")
         raise
 
-    url_pattern = re.compile(r'https?://\S+')
+    ordered = sorted(output.enriched_leads, key=lambda e: e.lead_index)[: len(leads)]
+    for j, enriched in enumerate(ordered):
+        enriched.lead_index = global_offset_0based + j + 1
 
-    for enriched in output.enriched_leads:
-        raw_urls = {item.link for item in enriched.raw_search_evidence if item.link}
+    return LeadEnrichmentAgentOutput(enriched_leads=ordered)
 
-        # 1. Strip hallucinated evidence_used URLs
-        hallucinated = [u for u in enriched.evidence_used if u not in raw_urls]
-        if hallucinated:
-            logger.warning(
-                f"[EnrichmentAgent] Lead {enriched.lead_index}: "
-                f"Removing {len(hallucinated)} hallucinated URL(s): {hallucinated}"
-            )
-            enriched.evidence_used = [u for u in enriched.evidence_used if u in raw_urls]
 
-        # 2. Scrub empty/unknown company_signals
-        before = len(enriched.enriched_data.company_signals)
-        enriched.enriched_data.company_signals = [
-            kv for kv in enriched.enriched_data.company_signals
-            if kv.value.strip().lower() not in ("unknown", "n/a", "", "none")
-        ]
-        removed = before - len(enriched.enriched_data.company_signals)
-        if removed:
-            logger.info(
-                f"[EnrichmentAgent] Lead {enriched.lead_index}: "
-                f"Scrubbed {removed} empty/unknown company_signal(s)"
-            )
+@agent_observe("lead_enrichment_agent", as_type="agent")
+async def run_lead_enrichment_agent(
+    leads: List[LeadResult],
+    query_output: QueryGeneratorOutput,
+) -> LeadEnrichmentAgentOutput:
+    """Batched enrichment (size 3, max 2 parallel), retries per batch, stable merge by index."""
 
-        # 3. Strip URLs embedded in notable_achievements strings
-        clean_achievements = []
-        for achievement in enriched.enriched_data.notable_achievements:
-            cleaned = url_pattern.sub("", achievement).strip().rstrip("()")
-            if cleaned:
-                clean_achievements.append(cleaned)
-        enriched.enriched_data.notable_achievements = clean_achievements
-
-        # 4. Enforce query_slot_coverage has exactly 5 entries
-        if len(enriched.query_slot_coverage) != 5:
-            logger.warning(
-                f"[EnrichmentAgent] Lead {enriched.lead_index}: "
-                f"query_slot_coverage has {len(enriched.query_slot_coverage)} entries, expected 5"
-            )
-
-        # 5. Log summary
-        logger.info(
-            f"[EnrichmentAgent] Lead {enriched.lead_index} '{enriched.lead_name}': "
-            f"status={enriched.identity_status}, "
-            f"confidence={enriched.confidence_score:.2f}, "
-            f"raw_evidence={len(enriched.raw_search_evidence)}, "
-            f"discrepancies={len(enriched.discrepancies)}"
+    n_leads = len(leads)
+    n_q = len(query_output.results)
+    if n_q != n_leads:
+        logger.warning(
+            f"[EnrichmentAgent] Query count {n_q} != lead count {n_leads}; using min length."
         )
+    n = min(n_leads, n_q)
+    if n == 0:
+        return LeadEnrichmentAgentOutput(enriched_leads=[])
 
+    leads = leads[:n]
+    query_output = QueryGeneratorOutput(results=query_output.results[:n])
+
+    slices = chunk_indices(n)
+    sem = asyncio.Semaphore(MAX_PARALLEL)
+
+    async def run_slice(
+        start: int, end: int
+    ) -> Tuple[int, Optional[LeadEnrichmentAgentOutput]]:
+        batch_leads = leads[start:end]
+        batch_q = QueryGeneratorOutput(results=query_output.results[start:end])
+        async with sem:
+            try:
+                out = await async_run_with_retries(
+                    lambda: _enrich_leads_one_batch(batch_leads, batch_q, start)
+                )
+                return (start, out)
+            except Exception as e:
+                logger.error(
+                    f"[EnrichmentAgent] Batch [{start}:{end}] failed after retries: {e}"
+                )
+                return (start, None)
+
+    tasks = [asyncio.create_task(run_slice(s, e)) for s, e in slices]
+    resolved = await asyncio.gather(*tasks)
+    resolved.sort(key=lambda x: x[0])
+
+    merged: List[LeadEnrichmentResult] = []
+    for _start, part in resolved:
+        if part is None:
+            continue
+        merged.extend(part.enriched_leads)
+
+    output = LeadEnrichmentAgentOutput(enriched_leads=merged)
+    _post_process_enrichment_output(output)
     logger.info(f"[EnrichmentAgent] Done. {len(output.enriched_leads)} leads enriched.")
     return output
-
-
-# Test enrichment pipeline
-
-async def test_enrichment_pipeline():
-    test_leads = [
-        LeadResult( 
-            name="Marshall Syahrial",
-            title="Principal Product Manager",
-            email="marshall.syahrial@commonsecuritization.com",
-            company="Financial Technology",
-            industry="Financial Services",
-            location="Washington",
-            country="United States",
-            linkedin="https://www.linkedin.com/in/marshall-s-14135b34",
-            provider="prospeo",
-            type="business",
-        ),
-        LeadResult(
-            name="Ar. Shamali Kather",
-            title="Product Manager II",
-            email="shamali.kather@73strings.com",
-            company="73 Strings",
-            industry="Financial Services",
-            location="Kurla",
-            country="India",
-            linkedin="https://www.linkedin.com/in/ar-shamali-kather-2071b7112",
-            provider="prospeo",
-            type="business",
-        ),
-        LeadResult(
-            name="Michael Greenlief",
-            title="Senior Technical Product Manager",
-            email="michael.greenlief@jackhenry.com",
-            company="Jack Henry",
-            industry="Financial Services",
-            location="Chicago",
-            country="United States",
-            linkedin="https://www.linkedin.com/in/mgreenlief00",
-            provider="prospeo",
-            type="both",
-        ),
-        LeadResult(
-            name="Maria Garcia",
-            location="Madrid",
-            country="Spain",
-            email="maria.garcia@gmail.com",
-            provider="prospeo",
-            type="individual",
-        ),
-    ]
-
-    mock_query_results = [
-        LeadQueries(queries=[
-            'site:linkedin.com/in/marshall-s-14135b34 "Marshall Syahrial"',
-            '"Marshall Syahrial" "Principal Product Manager" "Financial Technology"',
-            '"Marshall Syahrial" "Financial Technology" interview OR news OR announcement',
-            '"marshall.syahrial@commonsecuritization.com" contact OR email',
-            '"Marshall Syahrial" speaker OR author OR podcast "Financial Services"',
-        ]),
-        LeadQueries(queries=[
-            'site:linkedin.com/in/ar-shamali-kather-2071b7112 "Ar. Shamali Kather"',
-            '"Ar. Shamali Kather" "Product Manager II" "73 Strings"',
-            '"Ar. Shamali Kather" "73 Strings" interview OR news OR announcement',
-            '"shamali.kather@73strings.com" contact OR email',
-            '"Ar. Shamali Kather" speaker OR author OR podcast "Financial Services"',
-        ]),
-        LeadQueries(queries=[
-            'site:linkedin.com/in/mgreenlief00 "Michael Greenlief"',
-            '"Michael Greenlief" "Senior Technical Product Manager" "Jack Henry"',
-            '"Michael Greenlief" "Jack Henry" interview OR news OR announcement',
-            '"michael.greenlief@jackhenry.com" contact OR email',
-            '"Michael Greenlief" speaker OR author OR podcast "Financial Services"',
-        ]),
-        LeadQueries(queries=[
-            '"Maria Garcia" LinkedIn "Madrid"',
-            '"Maria Garcia" "Madrid" occupation OR profession',
-            '"Maria Garcia" "Madrid" news OR mention OR profile',
-            '"maria.garcia@gmail.com" contact OR email',
-            '"Maria Garcia" review OR testimonial OR mention "Madrid"',
-        ]),
-    ]
-
-    query_output = QueryGeneratorOutput(results=mock_query_results)
-
-    print(f"Starting enrichment for {len(test_leads)} leads...\n")
-
-    try:
-        output = await run_lead_enrichment_agent(
-            leads=test_leads,
-            query_output=query_output,
-        )
-
-        print("\n" + "=" * 80)
-        print(" ENRICHMENT REPORT")
-        print("=" * 80)
-
-        for res in output.enriched_leads:
-            p = res.enriched_data
-            status_icon = {"confirmed": "✅", "ambiguous": "⚠️", "not_found": "❌"}.get(res.identity_status, "❓")
-            print(f"\n Lead {res.lead_index}: {res.lead_name}  "
-                f"[{status_icon} {res.identity_status}] [confidence: {res.confidence_score:.0%}]")
-            print(f" Title: {p.current_title or 'Not found'}")
-
-            if p.social_links:
-                for s in p.social_links:
-                    print(f" {s.platform}: {s.url}")
-
-            if p.company_signals:
-                print(" Company signals:")
-                for sig in p.company_signals:
-                    print(f"   {sig.key}: {sig.value}")
-
-            if p.notable_achievements:
-                print(" Achievements:")
-                for a in p.notable_achievements:
-                    print(f"   - {a}")
-
-            if res.discrepancies:
-                print("  Discrepancies:")
-                for d in res.discrepancies:
-                    print(f"   {d.field}: '{d.original_value}' → '{d.found_value}' ({d.source_url})")
-
-            print(" Query coverage:")
-            for slot in res.query_slot_coverage:
-                print(f"   {slot.key}: {slot.value}")
-
-            if res.evidence_used:
-                print(f" Evidence ({len(res.evidence_used)} URL(s)):")
-                for url in res.evidence_used:
-                    print(f"   {url}")
-
-            print(f" Summary: {res.enrichment_summary}")
-            print(f" Raw evidence items: {len(res.raw_search_evidence)}")
-            print("-" * 40)
-
-    except Exception as e:
-        print(f" Enrichment failed: {e}")
-        raise
-
-
-if __name__ == "__main__":
-    asyncio.run(test_enrichment_pipeline())

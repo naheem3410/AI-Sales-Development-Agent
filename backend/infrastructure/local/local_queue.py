@@ -139,8 +139,8 @@ class LocalQueue:
         If retries remain, put it back in pending/.
         If retries exhausted, move to dead/.
         """
-        from core.messages import PipelineError
-        from core.enums import AgentName
+        from backend.core.messages import PipelineError
+        from backend.core.enums import AgentName
 
         error = PipelineError(
             error_type="processing_error",

@@ -293,6 +293,130 @@ CREATE TABLE IF NOT EXISTS pipeline_events (
 
 CREATE INDEX IF NOT EXISTS idx_pipeline_events_campaign_id ON pipeline_events(campaign_id);
 
+-- ── User Outreach Settings 
+-- Per-user Resend API key, sending identity, Cal.com link (outreach layer).
+CREATE TABLE IF NOT EXISTS user_outreach_settings (
+    id                  TEXT PRIMARY KEY,
+    user_id             TEXT NOT NULL REFERENCES users(id),
+    resend_api_key      TEXT,
+    sending_domain      TEXT,
+    sending_email       TEXT,
+    sending_name        TEXT,
+    cal_link            TEXT,
+    is_configured       INTEGER NOT NULL DEFAULT 0,  -- 0 or 1
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_outreach_settings_user_id ON user_outreach_settings(user_id);
+
+-- ── Outreach Send Log 
+-- One row per outbound sequence email (Resend), including bounce handling.
+CREATE TABLE IF NOT EXISTS outreach_log (
+    id                      TEXT PRIMARY KEY,
+    lead_id                 TEXT NOT NULL REFERENCES leads(id),
+    campaign_id             TEXT NOT NULL REFERENCES campaigns(id),
+    user_id                 TEXT NOT NULL REFERENCES users(id),
+    email_number            INTEGER NOT NULL,
+    resend_message_id       TEXT,
+    from_email              TEXT NOT NULL,
+    to_email                TEXT NOT NULL,
+    subject                 TEXT NOT NULL,
+    body_snapshot           TEXT,
+    status                  TEXT NOT NULL,
+    sent_at                 TEXT,
+    bounced_at              TEXT,
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_outreach_log_lead_id ON outreach_log(lead_id);
+CREATE INDEX IF NOT EXISTS idx_outreach_log_campaign_id ON outreach_log(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_outreach_log_resend_message_id ON outreach_log(resend_message_id);
+
+-- ── Follow-up Schedule 
+-- Scheduled Email 2 / Email 3 sends; scheduler queries pending rows by date.
+CREATE TABLE IF NOT EXISTS followup_schedule (
+    id                  TEXT PRIMARY KEY,
+    lead_id             TEXT NOT NULL REFERENCES leads(id),
+    campaign_id         TEXT NOT NULL REFERENCES campaigns(id),
+    user_id             TEXT NOT NULL REFERENCES users(id),
+    email_number        INTEGER NOT NULL,
+    scheduled_date      TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'pending',
+    sent_at             TEXT,
+    cancelled_at        TEXT,
+    cancel_reason       TEXT,
+    paused_until        TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_followup_schedule_lead_id ON followup_schedule(lead_id);
+CREATE INDEX IF NOT EXISTS idx_followup_schedule_campaign_id ON followup_schedule(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_followup_schedule_scheduled_date ON followup_schedule(scheduled_date);
+
+-- ── Reply Log 
+-- Inbound replies from Resend → reply agent audit trail (scheduler + human review).
+CREATE TABLE IF NOT EXISTS reply_log (
+    id                      TEXT PRIMARY KEY,
+    lead_id                 TEXT NOT NULL REFERENCES leads(id),
+    campaign_id             TEXT NOT NULL REFERENCES campaigns(id),
+    user_id                 TEXT NOT NULL REFERENCES users(id),
+    resend_inbound_id       TEXT,
+    from_email              TEXT,
+    subject                 TEXT,
+    body_text               TEXT,
+    body_html               TEXT,
+    classification          TEXT,
+    confidence_score        REAL,
+    agent_decision          TEXT,
+    referral_email          TEXT,
+    referral_name           TEXT,
+    response_sent           INTEGER NOT NULL DEFAULT 0,
+    response_body           TEXT,
+    responded_at            TEXT,
+    received_at             TEXT NOT NULL,
+    created_at              TEXT NOT NULL,
+    updated_at              TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_reply_log_lead_id ON reply_log(lead_id);
+CREATE INDEX IF NOT EXISTS idx_reply_log_campaign_id ON reply_log(campaign_id);
+
+-- ── RAG Documents 
+-- User-uploaded knowledge base documents (local: full text in SQLite).
+CREATE TABLE IF NOT EXISTS rag_documents (
+    id                  TEXT PRIMARY KEY,
+    user_id             TEXT NOT NULL REFERENCES users(id),
+    title               TEXT NOT NULL,
+    source_type         TEXT NOT NULL,
+    raw_content         TEXT NOT NULL,
+    chunk_count         INTEGER NOT NULL DEFAULT 0,
+    file_size_bytes     INTEGER,
+    embedded_at         TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_rag_documents_user_id ON rag_documents(user_id);
+
+-- ── RAG Chunks 
+-- Embedded segments for similarity search (embedding stored as JSON text locally).
+CREATE TABLE IF NOT EXISTS rag_chunks (
+    id                  TEXT PRIMARY KEY,
+    document_id         TEXT NOT NULL REFERENCES rag_documents(id) ON DELETE CASCADE,
+    user_id             TEXT NOT NULL REFERENCES users(id),
+    chunk_index         INTEGER NOT NULL,
+    chunk_text          TEXT NOT NULL,
+    embedding           TEXT NOT NULL,
+    token_count         INTEGER NOT NULL DEFAULT 0,
+    created_at          TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_document_id ON rag_chunks(document_id);
+CREATE INDEX IF NOT EXISTS idx_rag_chunks_user_id ON rag_chunks(user_id);
+
 """
 
 
@@ -332,12 +456,19 @@ CREATE TABLE IF NOT EXISTS followup_tracking (
     updated_at              TEXT NOT NULL
 );
 
--- ── Meeting Tracking (future: Meeting Agent) 
+-- ── Meeting Tracking (Cal.com bookings → webhook saves row, marks lead converted)
 CREATE TABLE IF NOT EXISTS meeting_tracking (
     id                      TEXT PRIMARY KEY,
     lead_id                 TEXT NOT NULL REFERENCES leads(id),
     campaign_id             TEXT NOT NULL REFERENCES campaigns(id),
     user_id                 TEXT NOT NULL REFERENCES users(id),
+    cal_booking_uid         TEXT,
+    meeting_title           TEXT,
+    meeting_start_at        TEXT,
+    meeting_end_at          TEXT,
+    attendee_email          TEXT,
+    attendee_name           TEXT,
+    cal_event_type          TEXT,
     meeting_scheduled_at    TEXT,
     meeting_type            TEXT,
     calendar_link           TEXT,

@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from backend.api.dependencies.auth import get_current_user, verify_campaign_ownership
+from backend.api.schemas.requests import LeadReviewResolutionRequest
 from backend.api.schemas.responses import (
     LeadListResponse, LeadResponse,
     EnrichmentSummary, QualificationSummary,
@@ -130,7 +131,11 @@ async def list_leads(
     status_filter: Optional[str] = Query(
         None,
         alias="status",
-        description="Filter by lead status: ingested, queried, enriched, qualified, review, disqualified, email_written"
+        description=(
+            "Semantic filters (campaign UI): ingested (all leads), enriched, qualified (approved), "
+            "review, disqualified (qual rejected), email_written, converted (meeting booked). "
+            "Otherwise exact match on leads.status."
+        ),
     ),
     user: Dict = Depends(get_current_user),
 ):
@@ -184,4 +189,42 @@ async def get_lead(
         )
 
     lead = dict(row)
+    return _build_lead_response(lead, db, include_details=True)
+
+
+@router.patch(
+    "/campaigns/{campaign_id}/leads/{lead_id}/review-resolution",
+    response_model=LeadResponse,
+)
+async def resolve_lead_review_resolution(
+    campaign_id: str,
+    lead_id: str,
+    body: LeadReviewResolutionRequest,
+    user: Dict = Depends(get_current_user),
+):
+    """
+    Resolve a lead still in qualification **review**: approve (qualified path) or reject (disqualified).
+    Uses the **latest** qualification row; it must currently be ``decision == review``.
+    """
+    db = get_db()
+    campaign = db.get_campaign(campaign_id)
+    verify_campaign_ownership(campaign, user, campaign_id)
+
+    try:
+        approve = body.resolution == "approve"
+        updated = db.resolve_lead_review_decision(campaign_id, lead_id, approve=approve)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        ) from e
+
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Lead not found.",
+        )
+
+    lead = dict(updated)
+    lead.setdefault("campaign_id", campaign_id)
     return _build_lead_response(lead, db, include_details=True)

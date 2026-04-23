@@ -72,7 +72,17 @@ class LeadStatus(str, Enum):
     EMAIL_WRITTEN = "email_written"
     EMAIL_SCHEDULED = "email_scheduled"  # future
     EMAIL_SENT = "email_sent"            # future
-    REPLIED = "replied"                  # future
+
+    # Outreach sequence & inbound replies (sender, scheduler, reply handler, APIs)
+    ACTIVE = "active"                     # contact is in outbound sequence / engaged
+    PAUSED = "paused"                     # follow-ups paused (OOO / manual resume)
+    INACTIVE = "inactive"                 # sequence exhausted or thread closed — no outreach
+    OUTREACH_REVIEW = "outreach_review"   # ambiguous reply — human queue
+    DO_NOT_CONTACT = "do_not_contact"     # explicit opt-out
+    TRANSFERRED = "transferred"           # referral passed to another contact
+    CONVERTED = "converted"               # booked via Cal.com (or terminal win — see webhook)
+
+    REPLIED = "replied"                  # inbound reply handled
     MEETING_BOOKED = "meeting_booked"    # future
     NURTURE = "nurture"                  # future
     UNSUBSCRIBED = "unsubscribed"        # future
