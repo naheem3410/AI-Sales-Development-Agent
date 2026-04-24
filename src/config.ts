@@ -33,7 +33,9 @@ export const config = {
     signUpUrl: envStr('NEXT_PUBLIC_CLERK_SIGN_UP_URL', '/sign-up'),
   },
   api: {
-    baseUrl: envStr('NEXT_PUBLIC_API_BASE_URL', ''),
+    // Never default to '' — that makes fetches same-origin to Amplify/Next and 404s API paths.
+    // Local: omit env or use .env.local. Production: set NEXT_PUBLIC_API_BASE_URL in Amplify (rebuild).
+    baseUrl: envStr('NEXT_PUBLIC_API_BASE_URL', 'https://smwjvpkngg.us-east-1.awsapprunner.com'),
   },
   polling: {
     pipelineInterval: envInt('NEXT_PUBLIC_PIPELINE_POLL_INTERVAL', 5000),
