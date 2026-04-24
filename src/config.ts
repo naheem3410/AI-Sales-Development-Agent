@@ -33,7 +33,7 @@ export const config = {
     signUpUrl: envStr('NEXT_PUBLIC_CLERK_SIGN_UP_URL', '/sign-up'),
   },
   api: {
-    baseUrl: envStr('NEXT_PUBLIC_API_BASE_URL', 'http://127.0.0.1:8000'),
+    baseUrl: envStr('NEXT_PUBLIC_API_BASE_URL', ''),
   },
   polling: {
     pipelineInterval: envInt('NEXT_PUBLIC_PIPELINE_POLL_INTERVAL', 5000),
