@@ -35,7 +35,7 @@ export const config = {
   api: {
     // Never default to '' — that makes fetches same-origin to Amplify/Next and 404s API paths.
     // Local: omit env or use .env.local. Production: set NEXT_PUBLIC_API_BASE_URL in Amplify (rebuild).
-    baseUrl: envStr('NEXT_PUBLIC_API_BASE_URL', 'https://smwjvpkngg.us-east-1.awsapprunner.com'),
+    baseUrl: envStr('NEXT_PUBLIC_API_BASE_URL', 'https://st3wtfswa2.execute-api.us-east-1.amazonaws.com'),
   },
   polling: {
     pipelineInterval: envInt('NEXT_PUBLIC_PIPELINE_POLL_INTERVAL', 5000),
