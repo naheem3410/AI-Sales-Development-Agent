@@ -52,10 +52,19 @@ function stageIndex(status: string): number {
 const ACTIVE_CAMPAIGN_STATUSES = new Set([
   'onboarding',
   'running',
+  'orchestration_running',
+  'orchestration_complete',
   'ingesting',
+  'ingestion_running',
+  'ingestion_complete',
   'enriching',
+  'enrichment_running',
+  'enrichment_complete',
   'qualifying',
+  'qualification_running',
+  'qualification_complete',
   'generating_emails',
+  'email_generation_running',
 ])
 
 /** Monotonic “progress” — a refetch must not overwrite newer UI state (poll often wins; HTTP can lag). */
@@ -97,6 +106,19 @@ const EMPTY_SUMMARY: CampaignSummary = {
   converted: 0,
 }
 
+const FINAL_PIPELINE_STATUSES = new Set([
+  'email_generation_complete',
+  'campaign_complete',
+  'failed',
+  'onboarding_failed',
+  'orchestration_failed',
+  'ingestion_failed',
+  'enrichment_failed',
+  'qualification_failed',
+  'email_generation_failed',
+  'cancelled',
+])
+
 /** Campaign can be started / restarted from the dashboard */
 function canRunPipeline(status: string): boolean {
   return status === 'onboarding_complete' || status === 'failed'
@@ -121,7 +143,9 @@ function isCampaignStateRegression(
 
 /** Polling is needed while the campaign is in any in-flight (non-terminal) stage */
 function isCampaignInFlightState(status: string) {
-  return ACTIVE_CAMPAIGN_STATUSES.has(status) || status.endsWith('_running')
+  return !FINAL_PIPELINE_STATUSES.has(status) && (
+    ACTIVE_CAMPAIGN_STATUSES.has(status) || status.endsWith('_running')
+  )
 }
 
 // ── Sub-page lazy imports ─────────────────────────────────────────────────────
@@ -326,7 +350,7 @@ export default function CampaignDetailPage() {
 
   useEffect(() => {
     if (!awaitingRunTransition) return
-    if ((campaign && !canRunPipeline(campaign.status)) || pipelineStatus?.is_running) {
+    if ((campaign && isCampaignInFlightState(campaign.status)) || pipelineStatus?.is_running) {
       setAwaitingRunTransition(false)
     }
   }, [awaitingRunTransition, campaign?.status, pipelineStatus?.is_running])
@@ -351,9 +375,14 @@ export default function CampaignDetailPage() {
   /** Campaign status is the source of truth: ready/failed is never a running state on the server */
   const canRun = campaign && canRunPipeline(campaign.status)
 
+  const campaignShowsBusy =
+    !!campaign &&
+    isCampaignInFlightState(campaign.status) &&
+    !canRunPipeline(campaign.status)
+
   /** Stale getPipeline can still have is_running while the campaign is already in a terminal/ready state */
   const showWorkerSpinner =
-    (!!pipelineStatus?.is_running || runLoading || awaitingRunTransition) &&
+    (!!pipelineStatus?.is_running || runLoading || awaitingRunTransition || campaignShowsBusy) &&
     !!campaign &&
     (!canRunPipeline(campaign.status) || awaitingRunTransition)
 
