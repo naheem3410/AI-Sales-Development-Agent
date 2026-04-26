@@ -28,19 +28,24 @@ const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
 
 // ── Pipeline stages for the progress tracker ──────────────────────────────────
 const PIPELINE_STAGES = [
-  { key: 'onboarding',        label: 'Onboarding'    },
-  { key: 'ingesting',         label: 'Ingestion'     },
-  { key: 'enriching',         label: 'Enrichment'    },
-  { key: 'qualifying',        label: 'Qualification' },
-  { key: 'generating_emails', label: 'Emails'        },
-  { key: 'campaign_complete', label: 'Complete'      },
+  { key: 'onboarding', label: 'Onboarding' },
+  { key: 'ingestion', label: 'Ingestion' },
+  { key: 'enrichment', label: 'Enrichment' },
+  { key: 'qualification', label: 'Qualification' },
+  { key: 'emails', label: 'Emails' },
+  { key: 'campaign_complete', label: 'Complete' },
 ]
 
 function stageIndex(status: string): number {
-  if (status === 'onboarding_running' || status === 'onboarding') {
-    return PIPELINE_STAGES.findIndex((s) => s.key === 'onboarding')
-  }
-  return PIPELINE_STAGES.findIndex((s) => s.key === status)
+  if (!status) return -1
+  const s = status.toLowerCase()
+  if (s === 'created' || s.startsWith('onboarding')) return 0
+  if (s.includes('ingestion') || s === 'running' || s.startsWith('orchestration')) return 1
+  if (s.includes('enrichment')) return 2
+  if (s.includes('qualification')) return 3
+  if (s.includes('email_generation') || s.includes('emails_')) return 4
+  if (s === 'campaign_complete') return 5
+  return -1
 }
 
 /** Campaign is still moving through onboarding or pipeline — keep GET /campaign fresh */
@@ -136,6 +141,7 @@ export default function CampaignDetailPage() {
   const [tab, setTab]                 = useState<Tab>('overview')
   const [loading, setLoading]         = useState(true)
   const [runLoading, setRunLoading]   = useState(false)
+  const [awaitingRunTransition, setAwaitingRunTransition] = useState(false)
   const [deleteOpen, setDeleteOpen]   = useState(false)
   const [deleting, setDeleting]       = useState(false)
 
@@ -183,7 +189,7 @@ export default function CampaignDetailPage() {
   // ── Poll campaign while onboarding / pipeline stages advance ─────────────
   const shouldPollCampaign =
     !!campaign &&
-    (isCampaignInFlightState(campaign.status) || !!pipelineStatus?.is_running)
+    (isCampaignInFlightState(campaign.status) || !!pipelineStatus?.is_running || awaitingRunTransition)
 
   const campaignPoll = usePolling<CampaignResponse>({
     fetcher: async () => {
@@ -248,7 +254,7 @@ export default function CampaignDetailPage() {
   // ── Poll pipeline status while campaign is active (or worker reports running)
   const shouldPollPipelineStatus =
     !!campaign &&
-    (isCampaignInFlightState(campaign.status) || !!pipelineStatus?.is_running)
+    (isCampaignInFlightState(campaign.status) || !!pipelineStatus?.is_running || awaitingRunTransition)
 
   const pipelinePoll = usePolling<PipelineStatusResponse>({
     fetcher: async () => {
@@ -279,6 +285,7 @@ export default function CampaignDetailPage() {
   const handleRun = async () => {
     if (!campaign) return
     setRunLoading(true)
+    setAwaitingRunTransition(true)
     try {
       const client = await getClient()
       setPipeline((prev) => ({
@@ -300,6 +307,7 @@ export default function CampaignDetailPage() {
       toast.success('Pipeline started')
       await loadCampaign()
     } catch (err: unknown) {
+      setAwaitingRunTransition(false)
       const status = (err as { status?: number }).status
       if (status === 402 || status === 403) {
         toast.error('Active subscription required', {
@@ -315,6 +323,13 @@ export default function CampaignDetailPage() {
       setRunLoading(false)
     }
   }
+
+  useEffect(() => {
+    if (!awaitingRunTransition) return
+    if ((campaign && !canRunPipeline(campaign.status)) || pipelineStatus?.is_running) {
+      setAwaitingRunTransition(false)
+    }
+  }, [awaitingRunTransition, campaign?.status, pipelineStatus?.is_running])
 
   // ── Delete ───────────────────────────────────────────────────────────────
   const handleDelete = async () => {
@@ -338,9 +353,9 @@ export default function CampaignDetailPage() {
 
   /** Stale getPipeline can still have is_running while the campaign is already in a terminal/ready state */
   const showWorkerSpinner =
-    !!pipelineStatus?.is_running &&
+    (!!pipelineStatus?.is_running || runLoading || awaitingRunTransition) &&
     !!campaign &&
-    !canRunPipeline(campaign.status)
+    (!canRunPipeline(campaign.status) || awaitingRunTransition)
 
   const isCancelled = campaign?.status === 'cancelled'
   const currentStageIdx = stageIndex(campaign?.status || '')
