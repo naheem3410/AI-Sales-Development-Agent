@@ -7,7 +7,7 @@ import { usePolling } from '@/hooks/usePolling'
 import { Badge, Spinner, ConfirmDialog } from '@/components/ui'
 import { cn, statusLabel, campaignStatusColor, formatDateTime } from '@/lib/utils'
 import { config } from '@/config'
-import type { CampaignResponse, PipelineStatusResponse } from '@/types/api'
+import type { CampaignResponse, CampaignSummary, PipelineStatusResponse } from '@/types/api'
 import { toast } from 'sonner'
 import {
   ArrowLeft, Zap, Users, Mail, BarChart2,
@@ -80,6 +80,16 @@ const STATUS_PROGRESS: Record<string, number> = {
   failed: 4,
   onboarding_failed: 1,
   cancelled: 0,
+}
+
+const EMPTY_SUMMARY: CampaignSummary = {
+  total_leads: 0,
+  enriched: 0,
+  approved: 0,
+  review: 0,
+  rejected: 0,
+  emails_written: 0,
+  converted: 0,
 }
 
 /** Campaign can be started / restarted from the dashboard */
@@ -235,17 +245,23 @@ export default function CampaignDetailPage() {
     campaignRef.current = campaign
   }, [campaign])
 
-  // ── Poll pipeline status while worker reports running ─────────────────────
-  const isRunning = pipelineStatus?.is_running || false
+  // ── Poll pipeline status while campaign is active (or worker reports running)
+  const shouldPollPipelineStatus =
+    !!campaign &&
+    (isCampaignInFlightState(campaign.status) || !!pipelineStatus?.is_running)
 
   const pipelinePoll = usePolling<PipelineStatusResponse>({
     fetcher: async () => {
       const client = await getClient()
       return client.getPipelineStatus(campaignId)
     },
-    shouldStop: (data) => !data.is_running,
+    shouldStop: (data) => {
+      const c = campaignRef.current
+      const campaignInFlight = !!c && isCampaignInFlightState(c.status)
+      return !campaignInFlight && !data.is_running
+    },
     interval: config.polling.pipelineInterval,
-    enabled: isRunning,
+    enabled: shouldPollPipelineStatus,
     onError: () => {},
   })
 
@@ -265,6 +281,16 @@ export default function CampaignDetailPage() {
     setRunLoading(true)
     try {
       const client = await getClient()
+      setPipeline((prev) => ({
+        campaign_id: prev?.campaign_id ?? campaignId,
+        status: 'running',
+        current_stage: prev?.current_stage ?? 'ingesting',
+        summary: prev?.summary ?? campaign.summary ?? EMPTY_SUMMARY,
+        failure_reason: null,
+        is_running: true,
+        is_complete: false,
+        is_failed: false,
+      }))
       await client.runPipeline(campaignId, {
         provider: 'prospeo',
         fetch_all: false,
